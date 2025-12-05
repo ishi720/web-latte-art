@@ -1,38 +1,132 @@
 "use strict;"
 
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+let canvas = new Object(); // キャンバス要素
+let ctx = new Object(); // コンテキスト
 
-const N = 128;
-const SIZE = (N + 2) * (N + 2);
-const DT = 0.1;
+const N = 128; // グリッドサイズ
+const SIZE = (N + 2) * (N + 2); // 境界を含む配列サイズ
+const DT = 0.1; // タイムステップ
 
 // 流体シミュレーションの状態
-let u = new Float32Array(SIZE);
-let v = new Float32Array(SIZE);
-let u_prev = new Float32Array(SIZE);
-let v_prev = new Float32Array(SIZE);
-let dens = new Float32Array(SIZE);
-let dens_prev = new Float32Array(SIZE);
+let u = new Float32Array(SIZE); // x方向速度
+let v = new Float32Array(SIZE); // y方向速度
+let u_prev = new Float32Array(SIZE); // 前フレームのx方向速度
+let v_prev = new Float32Array(SIZE); // 前フレームのy方向速度
+let dens = new Float32Array(SIZE); // 密度（ミルクの量）
+let dens_prev = new Float32Array(SIZE); // 前フレームの密度
 
 // コーヒーの背景色（ミルクが混ざっていない状態）
 let coffee = new Float32Array(SIZE);
 
 // マウス状態
-let mouseDown = false;
-let mouseX = 0, mouseY = 0;
-let pmouseX = 0, pmouseY = 0;
+let mouseDown = false; // マウスが押されているかどうか
+let mouseX = 0, mouseY = 0; // 現在のマウス位置
+let pmouseX = 0, pmouseY = 0; // 前回のマウス位置
 
 // パラメータ
-let viscosity = 0.005;
-let diffusion = 0.000001;
-let force = 5;
-let densityAmount = 300;
+let viscosity = 0.005; // 粘度
+let diffusion = 0.000001; // 拡散率
+let force = 5; // ミルクを注ぐ力
+let densityAmount = 300; // ミルクの量
 
+window.addEventListener('load', () => {
+
+    // キャンバスとコンテキストの取得
+    canvas = document.getElementById('canvas');
+    ctx = canvas.getContext('2d');
+
+    // 初期化
+    resetCoffee();
+    simulate();
+
+    // マウスイベント
+    canvas.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        const pos = getMousePos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        pmouseX = mouseX;
+        pmouseY = mouseY;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+        pmouseX = mouseX;
+        pmouseY = mouseY;
+        const pos = getMousePos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+
+        if (mouseDown) {
+            addMilk();
+        }
+    });
+    canvas.addEventListener('mouseup', () => {
+        mouseDown = false;
+    });
+    canvas.addEventListener('mouseleave', () => {
+        mouseDown = false;
+    });
+    canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        mouseDown = true;
+        const pos = getMousePos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+        pmouseX = mouseX;
+        pmouseY = mouseY;
+    });
+    canvas.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        pmouseX = mouseX;
+        pmouseY = mouseY;
+        const pos = getMousePos(e);
+        mouseX = pos.x;
+        mouseY = pos.y;
+
+        if (mouseDown) {
+            addMilk();
+        }
+    });
+    canvas.addEventListener('touchend', () => {
+        mouseDown = false;
+    });
+
+    // コントロール
+    document.getElementById('viscosity').addEventListener('input', (e) => {
+        viscosity = e.target.value / 100000;
+        document.getElementById('viscosity-value').textContent = viscosity.toFixed(6);
+    });
+
+    document.getElementById('diffusion').addEventListener('input', (e) => {
+        diffusion = e.target.value / 1000000;
+        document.getElementById('diffusion-value').textContent = diffusion.toFixed(6);
+    });
+
+    document.getElementById('force').addEventListener('input', (e) => {
+        force = parseInt(e.target.value);
+        document.getElementById('force-value').textContent = force;
+    });
+
+    document.getElementById('density').addEventListener('input', (e) => {
+        densityAmount = parseInt(e.target.value);
+        document.getElementById('density-value').textContent = densityAmount;
+    });
+});
+
+/**
+ * インデックス計算
+ * @param {number} i x方向インデックス
+ * @param {number} j y方向インデックス
+ * @returns {number} 1次元配列のインデックス
+ */
 function IX(i, j) {
     return i + (N + 2) * j;
 }
 
+/**
+ * 境界条件の設定
+ * @param {number} b 境界の種類（1: u速度, 2: v速度, 0: 密度）
+ * @param {Float32Array} x 配列
+ */
 function set_bnd(b, x) {
     const centerX = (N + 2) / 2;
     const centerY = (N + 2) / 2;
@@ -65,12 +159,22 @@ function set_bnd(b, x) {
         }
     }
 
+    // 角の処理
     x[IX(0, 0)] = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
     x[IX(0, N + 1)] = 0.5 * (x[IX(1, N + 1)] + x[IX(0, N)]);
     x[IX(N + 1, 0)] = 0.5 * (x[IX(N, 0)] + x[IX(N + 1, 1)]);
     x[IX(N + 1, N + 1)] = 0.5 * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
 }
 
+
+/**
+ * 連立方程式の解法（ガウス・ザイデル法）
+ * @param {number} b 境界の種類
+ * @param {Float32Array} x 解く配列
+ * @param {Float32Array} x0 元の配列
+ * @param {number} a 係数
+ * @param {number} c 係数
+ */
 function lin_solve(b, x, x0, a, c) {
     const cRecip = 1.0 / c;
     for (let k = 0; k < 20; k++) {
@@ -86,11 +190,28 @@ function lin_solve(b, x, x0, a, c) {
     }
 }
 
+/**
+ * 拡散ステップ
+ * @param {number} b 境界の種類
+ * @param {Float32Array} x 解く配列
+ * @param {Float32Array} x0 元の配列
+ * @param {number} diff 拡散率
+ * @param {number} dt タイムステップ
+ */
 function diffuse(b, x, x0, diff, dt) {
     const a = dt * diff * N * N;
     lin_solve(b, x, x0, a, 1 + 4 * a);
 }
 
+/**
+ * 移流ステップ
+ * @param {number} b 境界の種類
+ * @param {Float32Array} d 解く配列
+ * @param {Float32Array} d0 元の配列
+ * @param {Float32Array} u x方向速度
+ * @param {Float32Array} v y方向速度
+ * @param {number} dt タイムステップ
+ */
 function advect(b, d, d0, u, v, dt) {
     const dt0 = dt * N;
     for (let j = 1; j <= N; j++) {
@@ -120,6 +241,13 @@ function advect(b, d, d0, u, v, dt) {
     set_bnd(b, d);
 }
 
+/**
+ * 射影ステップ
+ * @param {Float32Array} u x方向速度
+ * @param {Float32Array} v y方向速度
+ * @param {Float32Array} p 圧力配列
+ * @param {Float32Array} div 発散配列
+ */
 function project(u, v, p, div) {
     for (let j = 1; j <= N; j++) {
         for (let i = 1; i <= N; i++) {
@@ -144,6 +272,15 @@ function project(u, v, p, div) {
     set_bnd(2, v);
 }
 
+/**
+ * 密度ステップ
+ * @param {Float32Array} x 密度配列
+ * @param {Float32Array} x0 元の密度配列
+ * @param {Float32Array} u x方向速度
+ * @param {Float32Array} v y方向速度
+ * @param {number} diff 拡散率
+ * @param {number} dt タイムステップ
+ */
 function dens_step(x, x0, u, v, diff, dt) {
     for (let i = 0; i < SIZE; i++) {
         x[i] += dt * x0[i];
@@ -152,6 +289,15 @@ function dens_step(x, x0, u, v, diff, dt) {
     advect(0, x, x0, u, v, dt);
 }
 
+/**
+ * 速度ステップ
+ * @param {Float32Array} u x方向速度
+ * @param {Float32Array} v y方向速度
+ * @param {Float32Array} u0 元のx方向速度
+ * @param {Float32Array} v0 元のy方向速度
+ * @param {number} visc 粘度
+ * @param {number} dt タイムステップ
+ */
 function vel_step(u, v, u0, v0, visc, dt) {
     for (let i = 0; i < SIZE; i++) {
         u[i] += dt * u0[i];
@@ -165,7 +311,11 @@ function vel_step(u, v, u0, v0, visc, dt) {
     project(u, v, u0, v0);
 }
 
-// マウスイベント
+/**
+ * マウス位置の取得
+ * @param {MouseEvent|TouchEvent} e イベントオブジェクト
+ * @returns {{x: number, y: number}} マウス位置
+ */
 function getMousePos(e) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -186,63 +336,9 @@ function getMousePos(e) {
     };
 }
 
-canvas.addEventListener('mousedown', (e) => {
-    mouseDown = true;
-    const pos = getMousePos(e);
-    mouseX = pos.x;
-    mouseY = pos.y;
-    pmouseX = mouseX;
-    pmouseY = mouseY;
-});
-
-canvas.addEventListener('mousemove', (e) => {
-    pmouseX = mouseX;
-    pmouseY = mouseY;
-    const pos = getMousePos(e);
-    mouseX = pos.x;
-    mouseY = pos.y;
-
-    if (mouseDown) {
-        addMilk();
-    }
-});
-
-canvas.addEventListener('mouseup', () => {
-    mouseDown = false;
-});
-
-canvas.addEventListener('mouseleave', () => {
-    mouseDown = false;
-});
-
-canvas.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    mouseDown = true;
-    const pos = getMousePos(e);
-    mouseX = pos.x;
-    mouseY = pos.y;
-    pmouseX = mouseX;
-    pmouseY = mouseY;
-});
-
-canvas.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    pmouseX = mouseX;
-    pmouseY = mouseY;
-    const pos = getMousePos(e);
-    mouseX = pos.x;
-    mouseY = pos.y;
-
-    if (mouseDown) {
-        addMilk();
-    }
-});
-
-canvas.addEventListener('touchend', () => {
-    mouseDown = false;
-});
-
-// ミルクを注ぐ
+/**
+ * ミルクを追加
+ */
 function addMilk() {
     const i = Math.floor((mouseX / canvas.width) * N) + 1;
     const j = Math.floor((mouseY / canvas.height) * N) + 1;
@@ -271,7 +367,9 @@ function addMilk() {
     }
 }
 
-// カフェアート風の描画
+/**
+ * 描画
+ */
 function draw() {
     const imageData = ctx.createImageData(canvas.width, canvas.height);
     const data = imageData.data;
@@ -355,7 +453,9 @@ function draw() {
     ctx.putImageData(imageData, 0, 0);
 }
 
-// メインループ
+/**
+ * シミュレーションループ
+ */
 function simulate() {
     vel_step(u, v, u_prev, v_prev, viscosity, DT);
     dens_step(dens, dens_prev, u, v, diffusion, DT);
@@ -379,28 +479,9 @@ function simulate() {
     requestAnimationFrame(simulate);
 }
 
-// コントロール
-document.getElementById('viscosity').addEventListener('input', (e) => {
-    viscosity = e.target.value / 100000;
-    document.getElementById('viscosity-value').textContent = viscosity.toFixed(6);
-});
-
-document.getElementById('diffusion').addEventListener('input', (e) => {
-    diffusion = e.target.value / 1000000;
-    document.getElementById('diffusion-value').textContent = diffusion.toFixed(6);
-});
-
-document.getElementById('force').addEventListener('input', (e) => {
-    force = parseInt(e.target.value);
-    document.getElementById('force-value').textContent = force;
-});
-
-document.getElementById('density').addEventListener('input', (e) => {
-    densityAmount = parseInt(e.target.value);
-    document.getElementById('density-value').textContent = densityAmount;
-});
-
-// プリセット機能
+/**
+ * コーヒーの初期化
+ */
 function resetCoffee() {
     u.fill(0);
     v.fill(0);
@@ -414,7 +495,3 @@ function resetCoffee() {
         coffee[i] = Math.random() * 20;
     }
 }
-
-// 初期化
-resetCoffee();
-simulate();
