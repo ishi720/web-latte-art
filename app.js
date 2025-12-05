@@ -89,27 +89,6 @@ window.addEventListener('load', () => {
     canvas.addEventListener('touchend', () => {
         mouseDown = false;
     });
-
-    // コントロール
-    document.getElementById('viscosity').addEventListener('input', (e) => {
-        viscosity = e.target.value / 100000;
-        document.getElementById('viscosity-value').textContent = viscosity.toFixed(6);
-    });
-
-    document.getElementById('diffusion').addEventListener('input', (e) => {
-        diffusion = e.target.value / 1000000;
-        document.getElementById('diffusion-value').textContent = diffusion.toFixed(6);
-    });
-
-    document.getElementById('force').addEventListener('input', (e) => {
-        force = parseInt(e.target.value);
-        document.getElementById('force-value').textContent = force;
-    });
-
-    document.getElementById('density').addEventListener('input', (e) => {
-        densityAmount = parseInt(e.target.value);
-        document.getElementById('density-value').textContent = densityAmount;
-    });
 });
 
 /**
@@ -132,6 +111,7 @@ function set_bnd(b, x) {
     const centerY = (N + 2) / 2;
     const radius = N * 0.45;
 
+    // 通常の境界条件
     for (let i = 1; i <= N; i++) {
         x[IX(0, i)] = b === 1 ? -x[IX(1, i)] : x[IX(1, i)];
         x[IX(N + 1, i)] = b === 1 ? -x[IX(N, i)] : x[IX(N, i)];
